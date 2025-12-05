@@ -1,1 +1,1 @@
-# parkovka
+home/jinxovich/ml-env/bin/activate
