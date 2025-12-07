@@ -2,37 +2,49 @@ import cv2
 from ultralytics import YOLO
 import time
 import torch
+import os
 
 VIDEO_SOURCE = 'test1.mp4'  
 OUTPUT_FILE = 'final_result.mp4'
 
-MODEL_SIGNS = 'models/traffic_signs_v1.pt'
-MODEL_ROAD = 'models/potholes_v1.pt'
+MODEL_SIGNS = 'models/traffic_signs_v1.pt'  
+MODEL_ROAD = 'models/road_surface_v1.pt'    
 
-CONF_THRESHOLD = 0.45 
+# Разные пороги для разных задач
+CONF_SIGNS = 0.50  
+CONF_ROAD = 0.25   
 
 def main():
-    print(f"Загрузка моделей на {torch.cuda.get_device_name(0)}...")
+    # Проверка путей
+    if not os.path.exists(MODEL_ROAD):
+        print(f"❌ ОШИБКА: Не найден файл {MODEL_ROAD}")
+        print("Скопируй runs/detect/road_surface_v1/weights/best.pt в папку models/ и назови road_surface_v1.pt")
+        return
+
+    print(f"🚀 Загрузка моделей на {torch.cuda.get_device_name(0)}...")
     
-    # Загружаем обе модели
-    model_signs = YOLO(MODEL_SIGNS)
-    model_road = YOLO(MODEL_ROAD)
+    # Грузим модели
+    try:
+        model_signs = YOLO(MODEL_SIGNS)
+        model_road = YOLO(MODEL_ROAD)
+    except Exception as e:
+        print(f"Ошибка загрузки модели: {e}")
+        return
 
     cap = cv2.VideoCapture(VIDEO_SOURCE)
     if not cap.isOpened():
         print("❌ Не могу открыть видео!")
         return
 
-    # Параметры видео для сохранения
+    # Параметры видео
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
-    # Кодек для сохранения (mp4v)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(OUTPUT_FILE, fourcc, fps, (width, height))
 
-    print("Обработка кадров...")
+    print(f"Начало обработки: {width}x{height} @ {fps}FPS")
     
     frame_count = 0
     start_time = time.time()
@@ -44,25 +56,26 @@ def main():
         
         frame_count += 1
 
+        # --- 1. Детекция ДОРОГИ (Ямы, Люки, Лежачие) ---
+        #  conf пониже, чтобы видеть трещины
+        results_road = model_road.predict(frame, conf=CONF_ROAD, verbose=False, device=0)
         
-        # 1. Детектим ЗНАКИ
-        # stream=True ускоряет процесс, так как не накапливает результаты в RAM
-        results_signs = model_signs.predict(frame, conf=CONF_THRESHOLD, verbose=False, device=0)
-        
-        # 2. Детектим ЯМЫ, ЛЮДЕЙ, МАШИНЫ
-        results_road = model_road.predict(frame, conf=CONF_THRESHOLD, verbose=False, device=0)
+        # --- 2. Детекция ЗНАКОВ ---
+        #  conf повыше, чтобы не ловить мусор
+        results_signs = model_signs.predict(frame, conf=CONF_SIGNS, verbose=False, device=0)
 
-        # Мы используем встроенный плоттер YOLO, это самый быстрый способ
+        # --- ОТРИСОВКА (Слоями) ---
         
-        annotated_frame = results_road[0].plot()
+        # Слой 1: Рисуем ямы на чистом кадре
+        # plot() возвращает numpy массив (картинку)
+        annotated_frame = results_road[0].plot(line_width=2) 
         
-        r_signs = results_signs[0]
-        if len(r_signs.boxes) > 0:
-            r_signs.orig_img = annotated_frame
-            annotated_frame = r_signs.plot(img=annotated_frame)
+        # Слой 2: Рисуем знаки ПОВЕРХ результата с ямами
+        # Аргумент img=annotated_frame заставляет рисовать на уже готовой картинке
+        annotated_frame = results_signs[0].plot(img=annotated_frame, line_width=2)
 
-        cv2.imshow('Parkovka AI System', annotated_frame)
-        
+        # Показ
+        cv2.imshow('Parkovka AI: Road + Signs', annotated_frame)
         out.write(annotated_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -70,9 +83,13 @@ def main():
 
     end_time = time.time()
     total_time = end_time - start_time
-    print(f"\nГотово! Обработано {frame_count} кадров за {total_time:.1f} сек.")
-    print(f"⚡ Средний FPS: {frame_count / total_time:.1f}")
-    print(f"💾 Результат сохранен в {OUTPUT_FILE}")
+    
+    print("-" * 30)
+    print(f"Готово!")
+    print(f"Кадров: {frame_count}")
+    print(f"Время: {total_time:.1f} сек")
+    print(f"Средний FPS: {frame_count / total_time:.1f}")
+    print(f"Результат сохранен в: {OUTPUT_FILE}")
 
     cap.release()
     out.release()
